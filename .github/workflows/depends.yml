@@ -57,12 +57,13 @@ env:
 
 jobs:
     build-cross:
+        # The actions (checkout, cache, upload-artifact) run directly on the
+        # GitHub-hosted runner so their Node 20 toolchain works. The actual
+        # `make depends` build runs inside a Ubuntu 18.04 docker container,
+        # which pins the produced Linux binaries' glibc symbol floor at 2.27
+        # so nerva-linux-armv8 (and its siblings) actually load on Jetson Nano
+        # JetPack 4.x and similar ARMv8 boards still on 18.04.
         runs-on: ubuntu-latest
-        container:
-            image: ubuntu:20.04
-            env:
-                DEBIAN_FRONTEND: noninteractive
-                CCACHE_TEMPDIR: /tmp/.ccache-temp
         strategy:
             fail-fast: false
             matrix:
@@ -109,12 +110,6 @@ jobs:
                         artifact-name: "nerva-android-armv8"
         name: ${{ matrix.toolchain.name }}
         steps:
-            -   name: Set apt conf
-                run: ${{env.APT_SET_CONF}}
-            -   name: Install dependencies
-                run: apt update; apt -y install build-essential libtool cmake autotools-dev automake pkg-config bsdmainutils curl git ca-certificates ccache ${{ matrix.toolchain.packages }}
-            -   name: Configure git
-                run: git config --global --add safe.directory '*'
             -   uses: actions/checkout@v6
                 with:
                     fetch-depth: 0
@@ -133,16 +128,44 @@ jobs:
                     restore-keys: |
                         depends-${{ matrix.toolchain.host }}-${{ hashFiles('contrib/depends/packages/*') }}
                         depends-${{ matrix.toolchain.host }}-
-            -   name: Prepare w64-mingw32
-                if: ${{ matrix.toolchain.host == 'x86_64-w64-mingw32' || matrix.toolchain.host == 'i686-w64-mingw32' }}
-                run: |
-                    update-alternatives --set ${{ matrix.toolchain.host }}-g++ $(which ${{ matrix.toolchain.host }}-g++-posix)
-                    update-alternatives --set ${{ matrix.toolchain.host }}-gcc $(which ${{ matrix.toolchain.host }}-gcc-posix)
             -   uses: ./.github/actions/set-make-job-count
-            -   name: Build
+            -   name: Build inside ubuntu:18.04 container
+                # The workspace and ccache state are bind-mounted into the
+                # container so caches persist across runs and artifacts are
+                # visible to the host runner for upload-artifact afterwards.
                 run: |
-                    ${{env.CCACHE_SETTINGS}}
-                    make depends target=${{ matrix.toolchain.host }} -j${{env.MAKE_JOB_COUNT}}
+                    mkdir -p ~/.ccache
+                    docker run --rm \
+                        -v "${{ github.workspace }}:/work" \
+                        -v "$HOME/.ccache:/root/.ccache" \
+                        -w /work \
+                        -e DEBIAN_FRONTEND=noninteractive \
+                        -e CCACHE_TEMPDIR=/tmp/.ccache-temp \
+                        -e MAKE_JOB_COUNT="${MAKE_JOB_COUNT}" \
+                        -e HOST_TARGET="${{ matrix.toolchain.host }}" \
+                        -e EXTRA_APT_PACKAGES="${{ matrix.toolchain.packages }}" \
+                        ubuntu:18.04 \
+                        bash -eux -c '
+                            { echo "Acquire::Retries \"3\";";
+                              echo "Acquire::http::Timeout \"120\";";
+                              echo "Acquire::ftp::Timeout \"120\";";
+                            } >> /etc/apt/apt.conf.d/80-custom
+
+                            apt update
+                            apt -y install build-essential libtool cmake autotools-dev automake pkg-config bsdmainutils curl git ca-certificates ccache ${EXTRA_APT_PACKAGES}
+
+                            git config --global --add safe.directory "*"
+
+                            if [ "${HOST_TARGET}" = "x86_64-w64-mingw32" ] || [ "${HOST_TARGET}" = "i686-w64-mingw32" ]; then
+                                update-alternatives --set "${HOST_TARGET}-g++" "$(which ${HOST_TARGET}-g++-posix)"
+                                update-alternatives --set "${HOST_TARGET}-gcc" "$(which ${HOST_TARGET}-gcc-posix)"
+                            fi
+
+                            ccache --max-size=150M
+                            ccache --set-config=compression=true
+
+                            make depends target="${HOST_TARGET}" -j"${MAKE_JOB_COUNT}"
+                        '
             -   uses: actions/upload-artifact@v7
                 if: github.event_name != 'schedule'
                 with:
