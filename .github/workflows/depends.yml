@@ -106,7 +106,11 @@ jobs:
                         artifact-name: "nerva-freebsd-x86_64"
                     -   name: "ARMv8 Android"
                         host: "aarch64-linux-android"
-                        packages: "gperf cmake python3 unzip python-is-python3"
+                        # python-is-python3 is installed by the build container's
+                        # bash script below (not here) because it doesn't exist
+                        # on ubuntu:18.04, and the matrix-level apt install must
+                        # succeed atomically.
+                        packages: "gperf cmake python3 unzip"
                         artifact-name: "nerva-android-armv8"
         name: ${{ matrix.toolchain.name }}
         steps:
@@ -153,6 +157,20 @@ jobs:
 
                             apt update
                             apt -y install build-essential libtool cmake autotools-dev automake pkg-config bsdmainutils curl git ca-certificates ccache ${EXTRA_APT_PACKAGES}
+
+                            # The Android NDK build glue calls /usr/bin/python
+                            # expecting python3. Use the standard packaging
+                            # mechanism where it is available (Ubuntu 20.04+),
+                            # fall back to creating the symlink by hand on
+                            # 18.04 where python-is-python3 is not packaged.
+                            # NB: avoid apostrophes anywhere inside this block;
+                            # the surrounding bash -c uses single quotes and
+                            # there is no way to escape a literal "\x27" inside
+                            # a single-quoted bash string.
+                            if [ "${HOST_TARGET}" = "aarch64-linux-android" ]; then
+                                apt -y install python-is-python3 2>/dev/null \
+                                    || ln -sf /usr/bin/python3 /usr/bin/python
+                            fi
 
                             git config --global --add safe.directory "*"
 
