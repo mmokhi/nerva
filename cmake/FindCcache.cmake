@@ -44,16 +44,20 @@ find_program(CCACHE_FOUND ccache)
 if (CCACHE_FOUND)
     # Try to compile a test program with ccache, in order to verify if it really works. (needed on exotic setups)
     set(TEST_PROJECT "${CMAKE_BINARY_DIR}/${CMAKE_FILES_DIRECTORY}/CMakeTmp")
+    # NB: project/target name must not be "test", because enable_testing()
+    # in the parent CMakeLists reserves that name globally, and older CMake
+    # (e.g. 3.10 on Ubuntu 18.04) rejects add_executable(test ...) as a hard
+    # error rather than a warning.
     file(WRITE "${TEST_PROJECT}/CMakeLists.txt" [=[
 cmake_minimum_required(VERSION 3.5)
-project(test)
+project(ccache_check)
 option (CCACHE "")
-file(WRITE "${CMAKE_SOURCE_DIR}/test.cpp" "int main() { return 0; }")
+file(WRITE "${CMAKE_SOURCE_DIR}/main.cpp" "int main() { return 0; }")
 set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE}")
 set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK    "${CCACHE}")
-add_executable(test test.cpp)
+add_executable(ccache_check main.cpp)
 ]=])
-    try_compile(RET "${TEST_PROJECT}/build" "${TEST_PROJECT}" "test" CMAKE_FLAGS -DCCACHE="${CCACHE_FOUND}")
+    try_compile(RET "${TEST_PROJECT}/build" "${TEST_PROJECT}" "ccache_check" CMAKE_FLAGS -DCCACHE="${CCACHE_FOUND}")
     unset(TEST_PROJECT)
     if (${RET})
         # Success
