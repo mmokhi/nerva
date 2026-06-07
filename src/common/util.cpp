@@ -810,7 +810,7 @@ std::string get_nix_version_display_string()
                 "to bypass and use software AES only.");
             return false;
         }
-        MINFO("Hardware AES detected and self-test passed, cn_slow_hash will use the AES intrinsic path.");
+        MGUSER_GREEN("Hardware AES detected and self-test passed, cn_slow_hash will use the AES intrinsic path.");
     }
     else
     {
