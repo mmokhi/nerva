@@ -1,8 +1,8 @@
 # HF14 / CNA v7 design notes
 
-Status: parked until HF13 is published and HF14 work opens. Everything here is
-measured and reproducible with the bench in this directory. Last updated
-2026-07-04. Not an issue yet on purpose, the team is busy shipping HF13.
+Status: implementation phase, on this branch. Everything here is measured and
+reproducible with the bench in this directory. Last updated 2026-07-06. Not an
+issue yet on purpose, the team is busy shipping HF13.
 
 Naming: HF numbers name the fork and its hash entry point (HF13 activates
 `cn_slow_hash_v13`), CNA numbers name the algorithm variant (HF13 runs CNA v6).
@@ -90,6 +90,15 @@ read-only dataset, interleaved with the v6 VM program at segment granularity:
   physics, no cache/clock/ILP tricks remain.
 - anti-GPU/ASIC: the segment barrier restores v6's defense class. The exact
   GPU margin is unproven without a GPU port, same evidentiary status as v6.
+  The one specific sub-question: v6's 8 MB per-nonce pad incidentally capped
+  GPU nonce-concurrency (VRAM / 8 MB); the 256 KB pad lifts that cap ~30x.
+  Reasoned prediction: no material change, because occupancy hides memory
+  latency, not warp divergence, and the per-nonce divergent program (identical
+  to v6, not JIT-able since it changes every nonce) was and stays the GPU's
+  binding constraint; ~3000 resident nonces already hid latency under v6.
+  On ASIC the pad shrink cuts the other way: 8 MB was feasible as on-die
+  SRAM, 240 MB of commodity DRAM is not, so ASIC resistance is equal or
+  better. Settled only by the port test below.
 - anti-pool: chain-data-coupled, not full-node-coupled. A determined pool
   could distribute the dataset plus per-block deltas. This is exactly v6's
   existing status, no regression, but do not overclaim it.
@@ -108,6 +117,82 @@ read-only dataset, interleaved with the v6 VM program at segment granularity:
 - implementation niceties found on the way: computed-goto dispatch for the VM
   (helps small cores most, non-consensus), hc128.h needs static inline and
   stddef.h (breaks -O0 builds of C users).
+
+## Implementation spec
+
+The open items above, spelled out.
+
+Crypto layer (all in C, compiled twice as _hw/_sw like v13):
+
+- cn_slow_hash_v14(context, data, len, hash, seed, dataset, dataset_qwords):
+  v13's framework verbatim (Keccak absorb, AES pad fill, salt XOR cycling
+  every CN_SALT_MEMORY, the 32 random-value pokes, regs from state.k, one
+  per-nonce program, iteration loop, register fold, AES fold, extra hash),
+  with only these deltas: the pad is CN_SCRATCHPAD_MEMORY_V14 = 256 KB, the
+  iteration calls cn_vm_execute_v7 with the dataset, and a chain_state
+  (seeded from the Keccak state, e.g. state.init+64) threads through all
+  passes and folds into a register at the end so the walk is load-bearing.
+- cn_vm_execute_v7: per pass, 8 segments of [chain ^= regs[seg & 7], then
+  128 serial hops in one tight loop, then 64 program steps]. Each hop:
+  index = high word of chain * dataset_qwords (mul128, no divide, no pow2
+  length requirement), load 8 bytes, chain = value + hop_index (kills short
+  value cycles), record into vals[]. SP_READ consumes vals round-robin
+  (+imm); SP_WRITE keeps v6 semantics against the 256 KB pad; ALU/CBRANCH
+  unchanged; pc persists across segments.
+- pad storage: reuse the first 256 KB of the existing 8 MB cna_scratchpad.
+  The v13 buffer must stay allocated for historical validation anyway, so a
+  separate allocation only adds RAM.
+- compile-time tripwires, both consensus-critical: CN_V7_HOPS >=
+  CN_PROGRAM_SIZE (a segment supplies 128 values and consumes at most 64;
+  break the ratio and SP_READ reads uninitialised stack, forking the chain)
+  and sizeof(block_cache_data) == 56 (the chase reads the struct's raw
+  bytes; reorder or pad it and the PoW silently changes; little-endian
+  assumed, same as v6).
+- self-test: extend cn_slow_hash_self_test with a v14 case over a small
+  deterministic synthetic dataset so HW and SW paths are compared at start.
+
+DB layer:
+
+- expose the block cache as a read-only flat view {data, qwords} plus a
+  guard holding a shared lock on m_block_cache_lock for the whole hash, so
+  build_block_cache (unique lock) cannot reallocate the vector under the
+  chase. Take build_block_cache(stable_height) first, then the shared lock,
+  then clamp the view to min(cache size, stable_height) entries so every
+  node chases the identical immutable prefix regardless of cache fill.
+- lock-hold tradeoff, accepted: a block-add waits behind in-flight hashers
+  for up to one hash duration. Fine at 60 s blocks, revisit if hash time
+  grows.
+- sizing policy (still to decide): sliding cap, newest N blocks totalling
+  256-512 MB, above every consumer cache, inside a 2 GB SBC forever.
+
+Consensus plumbing:
+
+- get_block_longhash_v14 mirrors v13: stable_height = height - 256, salt
+  from get_cna_v6_data, seed = blob_hash XOR salt[0..32) (pool resistance
+  unchanged), random_values from get_cna_v2_data BUT bounded to the 256 KB
+  pad. HAZARD found during a prior implementation pass: context->
+  cached_height caches random_values per height and the bound differs
+  between v13 (8 MB) and v14 (256 KB); around the fork a context can hash
+  both versions at the same height (competing chains), and a stale
+  v13-bounded cache served to v14 forks the chain. Key the cache by
+  (height, version) or do not cache on the v14 path at all.
+- dispatch in get_block_longhash: case 13 -> v13, default >= 14 -> v14.
+- activation: hard_forks entries for testnet/stagenet; mainnet height only
+  at launch. Difficulty retargets through the fork on its own, but choose
+  the iteration count so absolute hashrate lands near v13's (the benched
+  shape at 2048 passes is ~4x v13's per-hash cost; ~512 passes is close to
+  parity) to soften the difficulty cliff.
+- miner UX: the slow-pages warning is v13-pad-specific; under v14 the pad is
+  256 KB and the binding is the dataset, so regate that message post-fork.
+
+## Validation gates, in order
+
+- post-implementation: run the real cn_slow_hash_v14 on both reference boxes
+  and confirm the cross-box ratios carry over from the bench (also settles
+  the xorshift-for-AES approximation), plus the HW/SW self-test on both.
+- testnet: fork at the testnet height, mine and validate across the fleet.
+- pre-mainnet: GPU port test, v6 vs v7 throughput on the same card, to close
+  the occupancy question above. Only then set the mainnet height.
 
 ## Reproducing
 
