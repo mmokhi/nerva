@@ -44,6 +44,25 @@
 #define CN_REG_COUNT       8
 #define CN_VM_ITERATIONS   2048
 
+// CNA v7 (HF14): the memory-hard work moves from the private pad to a
+// strictly serial chase over a large shared read-only dataset (the block
+// cache), so a box's hashrate tracks its DRAM latency, the one hardware
+// quantity where a small board equals a desktop, instead of clock, cache or
+// core count: one box ~ one vote. The shape is the benched one: per pass,
+// CN_V7_SEGMENTS segments of [CN_V7_HOPS / CN_V7_SEGMENTS serial hops,
+// then a program slice], each segment gated on a
+// register the program just mutated so the walk cannot advance without
+// executing the per-nonce random program (the GPU/ASIC barrier, same class
+// as v6). All values consensus-critical.
+#define CN_V7_HOPS           1024
+#define CN_V7_SEGMENTS       8
+// v14 pass count. The benched 2048 passes cost ~4x a v13 hash; 512 is the
+// parity point, softening the difficulty cliff at the fork and keeping
+// block verification cheap (~75 ms/hash, roughly equal on every box since
+// the chase is DRAM-latency-bound). The per-pass shape is untouched, so the
+// benched cross-box ratios hold at any count. v13 keeps CN_VM_ITERATIONS.
+#define CN_VM_ITERATIONS_V14 512
+
 // Instruction opcodes — kept small so the opcode byte fits in uint8_t.
 typedef enum {
     CN_OP_IADD_RS   = 0,  // r[dst] += r[src] << (shift & 3)
@@ -80,3 +99,14 @@ void cn_vm_generate_program(cn_vm_program_t *prog, const uint8_t seed[32]);
 // loops possible).  Call CN_VM_ITERATIONS times with the same prog and
 // evolving regs to accumulate scratchpad mutations.
 void cn_vm_execute(cn_vm_program_t *prog, uint8_t *scratchpad, uint64_t regs[CN_REG_COUNT]);
+
+// Execute one HF14 pass: CN_V7_SEGMENTS repetitions of [serial chase over
+// the dataset, then a slice of prog].  The dataset is read-only and
+// dataset_qwords 64-bit words long (>= 1, any length: addressing maps the
+// chain value through a mul128 high word, no power-of-two requirement).
+// SP_READ consumes the chased values, SP_WRITE mutates the small pad
+// (CN_SCRATCHPAD_MEMORY_V14 bytes, write-hardness only).  *chain_state
+// carries the walk position across passes so the chase stays sequential for
+// the whole hash and cannot be precomputed.  Call CN_VM_ITERATIONS_V14 times.
+void cn_vm_execute_v7(cn_vm_program_t *prog, const uint8_t *dataset, uint64_t dataset_qwords,
+                      uint8_t *pad, uint64_t regs[CN_REG_COUNT], uint64_t *chain_state);

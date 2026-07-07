@@ -2427,6 +2427,49 @@ void BlockchainLMDB::build_block_cache(uint64_t height)
   m_block_cache_height.store(height, std::memory_order_release);
 }
 
+// The v14 chase reads m_block_cache as a flat byte region, so this struct's
+// in-memory layout is consensus-critical: 32-byte hash plus three 8-byte
+// fields, 56 bytes, no padding. Reordering it or adding a field would
+// silently change the PoW. Little-endian is assumed, same as v6.
+static_assert(sizeof(block_cache_data) == 56,
+              "block_cache_data layout is consensus-critical for the HF14 chase");
+
+BlockchainDB::cna_v7_view BlockchainLMDB::get_cna_v7_view(uint64_t height)
+{
+  // Fill the cache to [0, height) first; build_block_cache takes and releases
+  // the unique lock itself, so nothing is held across the shared lock below.
+  build_block_cache(height);
+
+  // The shared lock is held for the whole hash (the view owns it): other
+  // hashers read concurrently, but build_block_cache's unique lock cannot
+  // reallocate the vector under our raw pointer. Accepted tradeoff: a
+  // block-add can wait behind in-flight hashers for up to one hash
+  // duration, fine at 60 s blocks.
+  auto lock = std::make_shared<boost::shared_lock<boost::shared_mutex>>(m_block_cache_lock);
+
+  // Clamp to the stable prefix so every node chases identical bytes
+  // regardless of how far its cache happens to be filled.
+  uint64_t entries = m_block_cache.size();
+  if (entries > height)
+    entries = height;
+
+  // Sliding cap (CNA_V7_WINDOW_BLOCKS): only the newest entries, so the
+  // dataset stays above every consumer cache but inside a 2 GB SBC forever.
+  // Derived from height alone, so the window is identical on every node.
+  uint64_t first = 0;
+  if (entries > (uint64_t)CNA_V7_WINDOW_BLOCKS)
+  {
+    first = entries - (uint64_t)CNA_V7_WINDOW_BLOCKS;
+    entries = (uint64_t)CNA_V7_WINDOW_BLOCKS;
+  }
+
+  cna_v7_view v;
+  v.data   = reinterpret_cast<const uint8_t *>(m_block_cache.data() + first);
+  v.qwords = (entries * sizeof(block_cache_data)) / sizeof(uint64_t);
+  v.guard  = std::move(lock);
+  return v;
+}
+
 void BlockchainLMDB::get_cna_v2_data(cn_random_values_t *rv, uint64_t height, uint32_t scratchpad_size)
 {
   // Use block cache for the 5 hash lookups to avoid 5 random LMDB reads per block.

@@ -60,6 +60,7 @@ extern void cn_slow_hash_v9_hw(cn_hash_context_t *context, const void *data, siz
 extern void cn_slow_hash_v10_hw(cn_hash_context_t *context, const void *data, size_t length, char *hash, size_t iters, uint8_t init_size_blk, uint16_t xx, uint16_t yy, uint16_t zz, uint16_t ww);
 extern void cn_slow_hash_v11_hw(cn_hash_context_t *context, const void *data, size_t length, char *hash, size_t iters, uint8_t init_size_blk, uint16_t xx, uint16_t yy);
 extern void cn_slow_hash_v13_hw(cn_hash_context_t *context, const void *data, size_t length, char *hash, const uint8_t *seed);
+extern void cn_slow_hash_v14_hw(cn_hash_context_t *context, const void *data, size_t length, char *hash, const uint8_t *seed, const uint8_t *dataset, uint64_t dataset_qwords);
 #endif
 
 extern void cn_slow_hash_sw(cn_hash_context_t *context, const void *data, size_t length, char *hash, int variant, int prehashed, size_t iters);
@@ -68,6 +69,7 @@ extern void cn_slow_hash_v9_sw(cn_hash_context_t *context, const void *data, siz
 extern void cn_slow_hash_v10_sw(cn_hash_context_t *context, const void *data, size_t length, char *hash, size_t iters, uint8_t init_size_blk, uint16_t xx, uint16_t yy, uint16_t zz, uint16_t ww);
 extern void cn_slow_hash_v11_sw(cn_hash_context_t *context, const void *data, size_t length, char *hash, size_t iters, uint8_t init_size_blk, uint16_t xx, uint16_t yy);
 extern void cn_slow_hash_v13_sw(cn_hash_context_t *context, const void *data, size_t length, char *hash, const uint8_t *seed);
+extern void cn_slow_hash_v14_sw(cn_hash_context_t *context, const void *data, size_t length, char *hash, const uint8_t *seed, const uint8_t *dataset, uint64_t dataset_qwords);
 
 /* Runtime CPU detection. Cached in a function-static so the per-hash overhead
  * is one branch on a hot variable. Override with NERVA_FORCE_SOFTWARE_AES=1 to
@@ -149,6 +151,12 @@ void cn_slow_hash_v13(cn_hash_context_t *ctx, const void *data, size_t length, c
 {
     CN_DISPATCH(cn_slow_hash_v13_hw(ctx, data, length, hash, seed),
                 cn_slow_hash_v13_sw(ctx, data, length, hash, seed));
+}
+
+void cn_slow_hash_v14(cn_hash_context_t *ctx, const void *data, size_t length, char *hash, const uint8_t *seed, const uint8_t *dataset, uint64_t dataset_qwords)
+{
+    CN_DISPATCH(cn_slow_hash_v14_hw(ctx, data, length, hash, seed, dataset, dataset_qwords),
+                cn_slow_hash_v14_sw(ctx, data, length, hash, seed, dataset, dataset_qwords));
 }
 
 const char *cn_page_tier_name(int tier)
@@ -444,6 +452,27 @@ int cn_slow_hash_self_test(void)
         memset(&ctx->random_values, 0, sizeof(ctx->random_values));
         memset(ctx->salt, 0, CN_SALT_MEMORY);
         cn_slow_hash_v13_sw(ctx, input, sizeof(input) - 1, sw, seed);
+        if (memcmp(hw, sw, HASH_SIZE) != 0) ok = 0;
+    }
+
+    /* v14: 256 KB pad + shared-dataset chase. A small deterministic synthetic
+     * dataset stands in for the block cache; deliberately not a power-of-two
+     * qword count so the mul128 index mapping is exercised, not just masked
+     * offsets. Both paths mutate the pad and salt is read-only, so one reset
+     * of salt/random_values before each call keeps the inputs identical. */
+    {
+        static const uint8_t seed[32] = {0};
+        static uint8_t ds[65536];
+        const uint64_t ds_qwords = (sizeof(ds) / sizeof(uint64_t)) - 3;
+        uint32_t di;
+        for (di = 0; di < sizeof(ds); di++)
+            ds[di] = (uint8_t)(di * 131u + 7u);
+        memset(&ctx->random_values, 0, sizeof(ctx->random_values));
+        memset(ctx->salt, 0, CN_SALT_MEMORY);
+        cn_slow_hash_v14_hw(ctx, input, sizeof(input) - 1, hw, seed, ds, ds_qwords);
+        memset(&ctx->random_values, 0, sizeof(ctx->random_values));
+        memset(ctx->salt, 0, CN_SALT_MEMORY);
+        cn_slow_hash_v14_sw(ctx, input, sizeof(input) - 1, sw, seed, ds, ds_qwords);
         if (memcmp(hw, sw, HASH_SIZE) != 0) ok = 0;
     }
 

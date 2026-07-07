@@ -827,13 +827,15 @@ namespace cryptonote
 #else
       const int good_tier = CN_PAGES_THP;
 #endif
-      // the 8 MB pad only matters once CNA v6 (v13) is what we mine, no point
-      // nagging pre-fork miners about it
+      // the 8 MB pad only matters while CNA v6 (v13) is what we mine: no
+      // point nagging pre-fork miners, and from v14 on the pad is 256 KB
+      // with the memory binding on the shared dataset, so the page tier
+      // stops mattering there too
       uint8_t template_version = 0;
       CRITICAL_REGION_BEGIN(m_template_lock);
       template_version = m_template.major_version;
       CRITICAL_REGION_END();
-      if (tier < good_tier && template_version >= 13 && !m_slow_pages_warned.exchange(true))
+      if (tier < good_tier && template_version == 13 && !m_slow_pages_warned.exchange(true))
         MGUSER_YELLOW("Mining is running on normal memory pages, hashrate will be lower. "
             "Windows: run 'nervad --setup-large-pages' once as administrator, then log out and back in. "
             "Linux: set vm.nr_hugepages or leave transparent hugepages enabled. "

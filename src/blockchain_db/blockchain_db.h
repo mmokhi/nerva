@@ -33,6 +33,8 @@
 
 #include <string>
 #include <exception>
+#include <memory>
+#include <cstdint>
 #include <boost/program_options.hpp>
 #include "common/command_line.h"
 #include "crypto/crypto.h"
@@ -921,6 +923,25 @@ public:
   virtual void get_cna_v4_data(char *out, uint64_t height, uint32_t seed)  = 0;
   virtual void get_cna_v5_data(char *out, HC128_State *rng_state, uint64_t height) = 0;
   virtual void get_cna_v6_data(char *out, HC128_State *rng_state, uint64_t height) = 0;
+
+  /**
+   * @brief read-only flat byte view of the block cache, the HF14 chase dataset
+   *
+   * The v14 PoW chases the block cache as one shared read-only byte region:
+   * the newest CNA_V7_WINDOW_BLOCKS entries of the stable prefix (which is
+   * the whole prefix until the chain outgrows the window). `data`/`qwords`
+   * describe that region as 64-bit words. `guard` holds a shared lock on the
+   * cache so build_block_cache (unique lock) cannot reallocate the vector
+   * while a hash holds a raw pointer into it: keep the view alive for the
+   * whole hash, then let it destruct to release the lock.
+   */
+  struct cna_v7_view
+  {
+    const uint8_t *data = nullptr;  // window bytes, valid while guard is held
+    uint64_t qwords = 0;            // window length in 8-byte words, >= 1
+    std::shared_ptr<void> guard;    // opaque lock holder, released on destruction
+  };
+  virtual cna_v7_view get_cna_v7_view(uint64_t height) = 0;
 
   /**
    * @brief fetch a block by height

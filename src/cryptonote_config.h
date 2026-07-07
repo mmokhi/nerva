@@ -229,6 +229,9 @@ namespace config
         {11, 500000},
         {12, 930000},
         {13, 4320000}   // CryptoNight-Adaptive v6: 8 MB scratchpad + random VM program
+        // {14, TBD}    // CryptoNight-Adaptive v7: shared block-cache chase (one box ~ one
+                        // vote). Mainnet height is set only after the validation gates
+                        // pass: reference-pair run, testnet fork, GPU port test.
     };
 
     namespace testnet
@@ -256,7 +259,8 @@ namespace config
             {10, 580},
             {11, 590},
             {12, 2000},
-            {13, 2100}
+            {13, 2100},
+            {14, 2200}  // CryptoNight-Adaptive v7: shared block-cache chase
         };
     }
 
@@ -280,7 +284,8 @@ namespace config
             {10, 580},
             {11, 590},
             {12, 700},
-            {13, 800}
+            {13, 800},
+            {14, 900}   // CryptoNight-Adaptive v7: shared block-cache chase
         };
     }
 }
