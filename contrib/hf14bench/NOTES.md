@@ -1,8 +1,9 @@
 # HF14 / CNA v7 design notes
 
-Status: implementation phase, on this branch. Everything here is measured and
-reproducible with the bench in this directory. Last updated 2026-07-06. Not an
-issue yet on purpose, the team is busy shipping HF13.
+Status: implemented on this branch (crypto layer, DB view, consensus
+plumbing, testnet/stagenet heights; mainnet height waits for the validation
+gates below). Everything here is measured and reproducible with the bench in
+this directory. Last updated 2026-07-07.
 
 Naming: HF numbers name the fork and its hash entry point (HF13 activates
 `cn_slow_hash_v13`), CNA numbers name the algorithm variant (HF13 runs CNA v6).
@@ -69,7 +70,8 @@ One strictly serial chain (K=1, v6's own chain idea) walking a large shared
 read-only dataset, interleaved with the v6 VM program at segment granularity:
 
 - per pass: 8 segments, each = 128 serial hops over the dataset in one tight
-  loop, then 64 program steps. 1024 hops/pass, 2048 passes, program unchanged
+  loop, then 64 program steps. 1024 hops/pass, 2048 passes as benched (the
+  shipped pass count is 512, decided in the spec below), program unchanged
   from v6 (per-nonce random generation, HC128, IMUL/MIX weighting).
 - each chase segment is gated on a register the previous program segment just
   mutated. Nothing can advance the walk without executing the per-nonce
@@ -162,8 +164,14 @@ DB layer:
 - lock-hold tradeoff, accepted: a block-add waits behind in-flight hashers
   for up to one hash duration. Fine at 60 s blocks, revisit if hash time
   grows.
-- sizing policy (still to decide): sliding cap, newest N blocks totalling
-  256-512 MB, above every consumer cache, inside a 2 GB SBC forever.
+- sizing policy, DECIDED at implementation: sliding cap of
+  CNA_V7_WINDOW_BLOCKS = 9,000,000 newest cache entries (56 B each,
+  ~504 MB), the top of the 256-512 MB range, applied inside
+  get_cna_v7_view after the stable-prefix clamp. Derived from height
+  alone, so the window is identical on every node (it is a consensus
+  parameter). The chain is ~4.5M blocks, so the cap does not bind until
+  height ~9M; until then the dataset is the whole stable prefix, exactly
+  the benched shape.
 
 Consensus plumbing:
 
@@ -181,9 +189,14 @@ Consensus plumbing:
   at launch. Difficulty retargets through the fork on its own, but choose
   the iteration count so absolute hashrate lands near v13's (the benched
   shape at 2048 passes is ~4x v13's per-hash cost; ~512 passes is close to
-  parity) to soften the difficulty cliff.
+  parity) to soften the difficulty cliff. DECIDED at implementation:
+  CN_VM_ITERATIONS_V14 = 512, the parity point (~75 ms/hash, roughly equal
+  on every box since the chase is DRAM-latency-bound). A new constant, not
+  a retune of CN_VM_ITERATIONS, which v13 keeps for historical validation.
+  Hops stay at 1024: the per-pass shape is what was benched.
 - miner UX: the slow-pages warning is v13-pad-specific; under v14 the pad is
   256 KB and the binding is the dataset, so regate that message post-fork.
+  Done: the warning now fires only while the template is major_version 13.
 
 ## Validation gates, in order
 
