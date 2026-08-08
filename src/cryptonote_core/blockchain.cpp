@@ -2995,12 +2995,28 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
 
   const uint8_t hf_version = m_hardfork->get_current_version();
 
-  // Require mixin at least DEFAULT_RINGSIZE
-  for (const auto& txin : tx.vin)
+  // Ring size has to be the same on every input, and has to be one the fork
+  // version accepts. Inputs that are not txin_to_key are skipped here and
+  // rejected by the type check further down.
   {
-    if (boost::get<txin_to_key>(txin).key_offsets.size() != DEFAULT_RINGSIZE)
+    size_t min_ring_size = std::numeric_limits<size_t>::max(), max_ring_size = 0;
+    for (const auto& txin : tx.vin)
     {
-      MERROR_VER("Tx " << get_transaction_hash(tx) << " has varying ring size (" << DEFAULT_RINGSIZE << ")");
+      if (txin.type() != typeid(txin_to_key))
+        continue;
+      const size_t ring_size = boost::get<txin_to_key>(txin).key_offsets.size();
+      min_ring_size = std::min(min_ring_size, ring_size);
+      max_ring_size = std::max(max_ring_size, ring_size);
+    }
+    if (min_ring_size != max_ring_size)
+    {
+      MERROR_VER("Tx " << get_transaction_hash(tx) << " has varying ring size (" << min_ring_size << "-" << max_ring_size << "), it should be constant");
+      tvc.m_low_mixin = true;
+      return false;
+    }
+    if (!is_valid_ring_size(hf_version, min_ring_size))
+    {
+      MERROR_VER("Tx " << get_transaction_hash(tx) << " has invalid ring size (" << min_ring_size << "), it should be " << get_ring_size(hf_version));
       tvc.m_low_mixin = true;
       return false;
     }
